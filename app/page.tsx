@@ -150,6 +150,23 @@ export default function WatchPartyApp() {
   const recordLeaderboard = [...scoredGuests].sort((a, b) => b.correctWins - a.correctWins);
   const parlayLeaderboard = [...scoredGuests].sort((a, b) => b.parlayOdds - a.parlayOdds);
 
+  const [syncing, setSyncing] = useState(false);
+
+  const handleSyncScores = async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/sync-scores");
+      const data = await res.json();
+      if (data.success) {
+        alert("Scores and touchdowns synced!");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center font-mono">
@@ -170,12 +187,21 @@ export default function WatchPartyApp() {
               Live odds & real-time leaderboard across all devices.
             </p>
           </div>
-          <button
-            onClick={() => setShowAdmin(!showAdmin)}
-            className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 px-3 py-1.5 rounded-lg border border-slate-700"
-          >
-            {showAdmin ? "Hide Host Controls" : "Host Controls"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleSyncScores}
+              disabled={syncing}
+              className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg transition cursor-pointer"
+            >
+              {syncing ? "Syncing..." : "🔄 Refresh Scores"}
+            </button>
+            <button
+              onClick={() => setShowAdmin(!showAdmin)}
+              className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 px-3 py-1.5 rounded-lg border border-slate-700 cursor-pointer"
+            >
+              {showAdmin ? "Hide Host Controls" : "Host Controls"}
+            </button>
+          </div>
         </header>
 
         {/* HOST LIVE SCORING PANEL */}
