@@ -47,17 +47,18 @@ export default function WatchPartyApp() {
     if (gamesErr) console.error("Error fetching games:", gamesErr);
     if (subsErr) console.error("Error fetching submissions:", subsErr);
 
-    if (gamesData) {
-      const sundayGames = gamesData.filter((g: Game) =>
-        g.start_time.toLowerCase().startsWith("Thu","sun")
-      );
-      setGames(sundayGames);
+   if (gamesData) {
+      const activeGames = gamesData.filter((g: Game) => {
+        const day = g.start_time.toLowerCase();
+        return day.startsWith("thu") || day.startsWith("sun");
+      });
+      setGames(activeGames);
     }
     if (subsData) setSubmissions(subsData);
     setLoading(false);
   };
 
-  useEffect(() => {
+ useEffect(() => {
     fetchData();
 
     // 2. Real-time updates subscription across all devices
@@ -71,6 +72,26 @@ export default function WatchPartyApp() {
       supabase.removeChannel(channel);
     };
   }, []);
+
+  // 3. Auto-sync live scores from ESPN every 60 seconds while games are active
+  useEffect(() => {
+    const hasActiveOrUpcomingGames = games.some(
+      (g) => g.status === "in_progress" || g.status === "scheduled"
+    );
+
+    if (!hasActiveOrUpcomingGames) return;
+
+    const interval = setInterval(async () => {
+      try {
+        await fetch("/api/sync-scores");
+        // Supabase Realtime will automatically trigger fetchData() across all connected devices
+      } catch (err) {
+        console.error("Auto-sync error:", err);
+      }
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, [games]);
 
   const handleWinnerSelect = (gameId: string, team: string) => {
     setPicks((prev) => ({
