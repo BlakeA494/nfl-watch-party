@@ -39,7 +39,7 @@ export default function WatchPartyApp() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // 1. Fetch initial data from Supabase
+  // 1. Fetch initial data from Supabase (filtered to Sunday games only)
   const fetchData = async () => {
     const { data: gamesData, error: gamesErr } = await supabase.from("games").select("*");
     const { data: subsData, error: subsErr } = await supabase.from("pool_submissions").select("*");
@@ -47,7 +47,12 @@ export default function WatchPartyApp() {
     if (gamesErr) console.error("Error fetching games:", gamesErr);
     if (subsErr) console.error("Error fetching submissions:", subsErr);
 
-    if (gamesData) setGames(gamesData);
+    if (gamesData) {
+      const sundayGames = gamesData.filter((g: Game) =>
+        g.start_time.toLowerCase().startsWith("sun")
+      );
+      setGames(sundayGames);
+    }
     if (subsData) setSubmissions(subsData);
     setLoading(false);
   };
