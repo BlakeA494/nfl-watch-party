@@ -40,16 +40,20 @@ export async function GET() {
         ? "in_progress"
         : "scheduled";
 
-      // Determine straight-up winner if final
+      // Determine leading or final winner
       let winner = null;
-      if (isCompleted) {
+      if (statusState === "in_progress" || isCompleted) {
         const homeComp = comp.competitors.find((c: any) => c.homeAway === "home");
         const awayComp = comp.competitors.find((c: any) => c.homeAway === "away");
-        if (parseInt(homeComp.score) > parseInt(awayComp.score)) {
+        const homeScore = parseInt(homeComp?.score || "0", 10);
+        const awayScore = parseInt(awayComp?.score || "0", 10);
+
+        if (homeScore > awayScore) {
           winner = dbGame.home_team;
-        } else if (parseInt(awayComp.score) > parseInt(homeComp.score)) {
+        } else if (awayScore > homeScore) {
           winner = dbGame.away_team;
         }
+        // If tied (homeScore === awayScore), winner stays null so nobody gets credit yet
       }
 
       // Fetch TD scorers from ESPN scoring plays summary
@@ -88,7 +92,7 @@ export async function GET() {
         .from("games")
         .update({
           status: statusState,
-          winner: winner || dbGame.winner,
+          winner: statusState === "scheduled" ? dbGame.winner : winner,
           td_scorers: tdScorers,
         })
         .eq("id", dbGame.id);
