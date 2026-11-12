@@ -31,6 +31,33 @@ interface GuestSubmission {
   picks: Record<string, UserPick>;
 }
 
+function parseKickoffOrder(startTime: string): number {
+  const dayWeights: Record<string, number> = {
+    thu: 1,
+    fri: 2,
+    sat: 3,
+    sun: 4,
+    mon: 5,
+  };
+
+  const lower = startTime.toLowerCase();
+  const dayKey = Object.keys(dayWeights).find((d) => lower.startsWith(d)) || "sun";
+  const dayScore = dayWeights[dayKey] * 10000;
+
+  // Extract hour, minute, and AM/PM (e.g., "1:00 PM" or "8:15 PM")
+  const match = lower.match(/(\d{1,2}):(\d{2})\s*(am|pm)/);
+  if (!match) return dayScore;
+
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const meridiem = match[3];
+
+  if (meridiem === "pm" && hours !== 12) hours += 12;
+  if (meridiem === "am" && hours === 12) hours = 0;
+
+  return dayScore + hours * 100 + minutes;
+}
+
 export default function WatchPartyApp() {
   const [games, setGames] = useState<Game[]>([]);
   const [submissions, setSubmissions] = useState<GuestSubmission[]>([]);
@@ -38,6 +65,7 @@ export default function WatchPartyApp() {
   const [picks, setPicks] = useState<Record<string, Partial<UserPick>>>({});
   const [showAdmin, setShowAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   // 1. Fetch initial data from Supabase (filtered to Sunday games only)
   const fetchData = async () => {
@@ -48,11 +76,15 @@ export default function WatchPartyApp() {
     if (subsErr) console.error("Error fetching submissions:", subsErr);
 
    if (gamesData) {
-      const activeGames = gamesData.filter((g: Game) => {
-        const day = g.start_time.toLowerCase();
-        return day.startsWith("thu") || day.startsWith("sun");
-      });
-      setGames(activeGames);
+      const sortedGames = gamesData
+        .filter((g: Game) => {
+          const day = g.start_time.toLowerCase();
+          return day.startsWith("thu") || day.startsWith("sun");
+        })
+        .sort((a: Game, b: Game) => parseKickoffOrder(a.start_time) - parseKickoffOrder(b.start_time));
+
+      setGames(sortedGames);
+    };
     }
     if (subsData) setSubmissions(subsData);
     setLoading(false);
@@ -145,38 +177,52 @@ export default function WatchPartyApp() {
     await supabase.from("games").update({ winner, status: "final" }).eq("id", gameId);
   };
 
-  // --- LEADERBOARDS CALCULATION ---
-  const scoredGuests = submissions.map((guest) => {
-    let correctWins = 0;
-    let hitTds = 0;
+  // Calculate live leaderboards
+  const scoredGuests = submissions.map((sub) => {
+    let wins = 0;
+    let losses = 0;
+    let ties = 0;
     let cumulativeParlayOdds = 1.0;
+    let tdHits = 0;
 
     games.forEach((game) => {
-      const pick = guest.picks[game.id];
+      const pick = sub.picks[game.id];
       if (!pick) return;
 
-      if (game.winner && pick.selectedWinner === game.winner) {
-        correctWins += 1;
+      // 1. Straight-up W-L-T calculation (live projected + final)
+      if (game.status === "in_progress" || game.status === "final") {
+        if (!game.winner) {
+          ties++;
+        } else if (pick.selectedWinner === game.winner) {
+          wins++;
+        } else {
+          losses++;
+        }
       }
 
-      if (pick.selectedPlayer && game.td_scorers?.includes(pick.selectedPlayer.name)) {
-        hitTds += 1;
+      // 2. TD Scorer parlay calculation
+      if (game.td_scorers?.includes(pick.selectedPlayer.name)) {
+        tdHits++;
         cumulativeParlayOdds *= pick.selectedPlayer.decimalOdds;
       }
     });
 
     return {
-      name: guest.user_name,
-      correctWins,
-      hitTds,
-      parlayOdds: hitTds > 0 ? cumulativeParlayOdds : 0,
+      ...sub,
+      wins,
+      losses,
+      ties,
+      tdHits,
+      parlayMultiplier: tdHits > 0 ? cumulativeParlayOdds : 0,
     };
   });
 
-  const recordLeaderboard = [...scoredGuests].sort((a, b) => b.correctWins - a.correctWins);
-  const parlayLeaderboard = [...scoredGuests].sort((a, b) => b.parlayOdds - a.parlayOdds);
-
-  const [syncing, setSyncing] = useState(false);
+  const recordLeaderboard = [...scoredGuests].sort(
+    (a, b) => b.wins + b.ties * 0.5 - (a.wins + a.ties * 0.5)
+  );
+  const parlayLeaderboard = [...scoredGuests].sort(
+    (a, b) => b.parlayMultiplier - a.parlayMultiplier
+  );
 
   const handleSyncScores = async () => {
     setSyncing(true);
@@ -288,49 +334,71 @@ export default function WatchPartyApp() {
           </div>
         )}
 
-        {/* DUAL LEADERBOARDS */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Dual Leaderboards */}
+        <div className="grid md:grid-cols-2 gap-6">
+          {/* Straight Up Records */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-            <h2 className="text-xl font-bold text-sky-400 flex items-center justify-between">
-              <span>🏆 Straight Up Records</span>
-              <span className="text-xs bg-sky-950 text-sky-300 px-2 py-1 rounded">Winners</span>
-            </h2>
-            <div className="mt-4 divide-y divide-slate-800">
-              {recordLeaderboard.length === 0 && <p className="text-xs text-slate-500 py-3">No submissions yet.</p>}
-              {recordLeaderboard.map((guest, idx) => (
-                <div key={idx} className="flex justify-between items-center py-2 text-sm">
-                  <span>
-                    <span className="text-slate-500 mr-2 font-mono">#{idx + 1}</span>
-                    <span className="font-medium">{guest.name}</span>
-                  </span>
-                  <span className="font-mono font-bold text-sky-300">
-                    {guest.correctWins} Win{guest.correctWins !== 1 ? 's' : ''}
-                  </span>
-                </div>
-              ))}
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold text-sky-400">🏆 Straight Up Records</h2>
+              <span className="text-xs bg-sky-950 text-sky-300 px-2.5 py-1 rounded border border-sky-800">
+                W-L-T
+              </span>
             </div>
+            {recordLeaderboard.length === 0 ? (
+              <p className="text-slate-500 text-sm">No submissions yet.</p>
+            ) : (
+              <div className="space-y-2.5">
+                {recordLeaderboard.map((guest, idx) => (
+                  <div
+                    key={guest.id}
+                    className="flex justify-between items-center bg-slate-950 px-3.5 py-2.5 rounded-lg border border-slate-800/80"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-slate-500 font-mono text-sm">#{idx + 1}</span>
+                      <span className="font-semibold text-slate-100">{guest.guest_name}</span>
+                    </div>
+                    {/* 👇 STRAIGHT-UP BADGE */}
+                    <span className="font-mono font-bold text-sky-400 bg-sky-950/60 px-3 py-1 rounded border border-sky-800/50">
+                      {guest.wins}-{guest.losses}-{guest.ties}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
+          {/* Combined TD Parlay Odds */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-            <h2 className="text-xl font-bold text-emerald-400 flex items-center justify-between">
-              <span>🔥 Combined TD Parlay Odds</span>
-              <span className="text-xs bg-emerald-950 text-emerald-300 px-2 py-1 rounded">Hit Multipliers</span>
-            </h2>
-            <div className="mt-4 divide-y divide-slate-800">
-              {parlayLeaderboard.length === 0 && <p className="text-xs text-slate-500 py-3">No submissions yet.</p>}
-              {parlayLeaderboard.map((guest, idx) => (
-                <div key={idx} className="flex justify-between items-center py-2 text-sm">
-                  <div>
-                    <span className="text-slate-500 mr-2 font-mono">#{idx + 1}</span>
-                    <span className="font-medium">{guest.name}</span>
-                    <span className="text-xs text-slate-400 ml-2">({guest.hitTds} TD{guest.hitTds !== 1 ? 's' : ''})</span>
-                  </div>
-                  <span className="font-mono font-bold text-emerald-400">
-                    {guest.parlayOdds > 0 ? `${guest.parlayOdds.toFixed(2)}x` : "0.00x"}
-                  </span>
-                </div>
-              ))}
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold text-emerald-400">🔥 Combined TD Parlay Odds</h2>
+              <span className="text-xs bg-emerald-950 text-emerald-300 px-2.5 py-1 rounded border border-emerald-800">
+                Hit Multipliers
+              </span>
             </div>
+            {parlayLeaderboard.length === 0 ? (
+              <p className="text-slate-500 text-sm">No submissions yet.</p>
+            ) : (
+              <div className="space-y-2.5">
+                {parlayLeaderboard.map((guest, idx) => (
+                  <div
+                    key={guest.id}
+                    className="flex justify-between items-center bg-slate-950 px-3.5 py-2.5 rounded-lg border border-slate-800/80"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-slate-500 font-mono text-sm">#{idx + 1}</span>
+                      <div>
+                        <span className="font-semibold text-slate-100 block">{guest.guest_name}</span>
+                        <span className="text-xs text-slate-400">{guest.tdHits} TD Hits</span>
+                      </div>
+                    </div>
+                    {/* 👇 PARLAY BADGE */}
+                    <span className="font-mono font-bold text-emerald-400 bg-emerald-950/60 px-3 py-1 rounded border border-emerald-800/50">
+                      {guest.parlayMultiplier.toFixed(2)}x
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
