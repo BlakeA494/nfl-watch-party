@@ -3,7 +3,6 @@ import { supabase } from "@/lib/supabase";
 
 const API_KEY = process.env.ODDS_API_KEY;
 
-// Helper to convert American (+150 / -110) to Decimal (2.50 / 1.91)
 function americanToDecimal(american: number): number {
   if (american > 0) {
     return parseFloat(((american / 100) + 1).toFixed(2));
@@ -20,25 +19,31 @@ export async function GET() {
   try {
     // 1. Fetch upcoming NFL games
     const eventsRes = await fetch(
-      `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events?apiKey=${API_KEY}`
+      `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events?apiKey=${API_KEY}`,
+      { cache: "no-store" }
     );
     const events = await eventsRes.json();
 
     if (!Array.isArray(events) || events.length === 0) {
-      return NextResponse.json({ message: "No upcoming games found" });
+      return NextResponse.json({ message: "No upcoming games found", raw: events });
     }
 
-    // Select upcoming games for the party (limit to first 4 or 5)
-    const partyGames = events.slice(0, 4);
+    // Filter to games happening within the next 7 days (the current NFL week)
+    const oneWeekFromNow = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    const weeklyGames = events.filter(
+      (e: any) => new Date(e.commence_time).getTime() <= oneWeekFromNow
+    );
 
-    for (const game of partyGames) {
+    const loadedSummary = [];
+
+    for (const game of weeklyGames) {
       // 2. Fetch Anytime TD Scorer odds for each game
       const oddsRes = await fetch(
-        `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/${game.id}/odds?apiKey=${API_KEY}&regions=us&markets=player_anytime_td&oddsFormat=american`
+        `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/events/${game.id}/odds?apiKey=${API_KEY}&regions=us&markets=player_anytime_td&oddsFormat=american`,
+        { cache: "no-store" }
       );
       const oddsData = await oddsRes.json();
 
-      // Find the DraftKings or FanDuel bookmaker props
       const bookmaker =
         oddsData.bookmakers?.find((b: any) => b.key === "draftkings") ||
         oddsData.bookmakers?.[0];
@@ -49,7 +54,6 @@ export async function GET() {
 
       let topScorers = [];
       if (tdMarket?.outcomes) {
-        // Sort players by shortest odds (most likely to score) and take the top 10
         topScorers = tdMarket.outcomes
           .sort((a: any, b: any) => a.price - b.price)
           .slice(0, 10)
@@ -60,25 +64,43 @@ export async function GET() {
           }));
       }
 
-      // Format game time display
       const startTime = new Date(game.commence_time).toLocaleTimeString("en-US", {
         weekday: "short",
         hour: "numeric",
         minute: "2-digit",
+        timeZone: "America/New_York",
         timeZoneName: "short",
       });
 
-      // 3. Upsert game into Supabase
-      await supabase.from("games").upsert({
+      // 3. Upsert into Supabase and check for errors
+      const { error: upsertError } = await supabase.from("games").upsert({
         id: game.id,
         home_team: game.home_team,
         away_team: game.away_team,
         start_time: startTime,
         top_scorers: topScorers,
       });
+
+      if (upsertError) {
+        return NextResponse.json(
+          { error: "Supabase Upsert Failed", details: upsertError.message },
+          { status: 500 }
+        );
+      }
+
+      loadedSummary.push({
+        matchup: `${game.away_team} @ ${game.home_team}`,
+        startTime,
+        scorersFound: topScorers.length,
+        top3Preview: topScorers.slice(0, 3),
+      });
     }
 
-    return NextResponse.json({ success: true, count: partyGames.length });
+    return NextResponse.json({
+      success: true,
+      count: loadedSummary.length,
+      games: loadedSummary,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
