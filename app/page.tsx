@@ -319,7 +319,7 @@ export default function WatchPartyApp() {
                 type="text"
                 value={userName}
                 onChange={(e) => setUserName(e.target.value)}
-                placeholder="e.g. Mike"
+                placeholder="e.g. The Rat"
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
               />
             </div>
