@@ -49,7 +49,7 @@ export default function WatchPartyApp() {
 
     if (gamesData) {
       const sundayGames = gamesData.filter((g: Game) =>
-        g.start_time.toLowerCase().startsWith("sun")
+        g.start_time.toLowerCase().startsWith("Thu","sun")
       );
       setGames(sundayGames);
     }
