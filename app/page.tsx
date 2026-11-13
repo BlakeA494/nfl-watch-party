@@ -44,7 +44,6 @@ function parseKickoffOrder(startTime: string): number {
   const dayKey = Object.keys(dayWeights).find((d) => lower.startsWith(d)) || "sun";
   const dayScore = dayWeights[dayKey] * 10000;
 
-  // Extract hour, minute, and AM/PM (e.g., "1:00 PM" or "8:15 PM")
   const match = lower.match(/(\d{1,2}):(\d{2})\s*(am|pm)/);
   if (!match) return dayScore;
 
@@ -64,10 +63,13 @@ export default function WatchPartyApp() {
   const [userName, setUserName] = useState("");
   const [picks, setPicks] = useState<Record<string, Partial<UserPick>>>({});
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showPickForm, setShowPickForm] = useState(true);
+  const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
+  const [expandedParlayId, setExpandedParlayId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
-  // 1. Fetch initial data from Supabase (filtered to Sunday games only)
+  // 1. Fetch initial data from Supabase & sort chronologically
   const fetchData = async () => {
     const { data: gamesData, error: gamesErr } = await supabase.from("games").select("*");
     const { data: subsData, error: subsErr } = await supabase.from("pool_submissions").select("*");
@@ -75,7 +77,7 @@ export default function WatchPartyApp() {
     if (gamesErr) console.error("Error fetching games:", gamesErr);
     if (subsErr) console.error("Error fetching submissions:", subsErr);
 
-   if (gamesData) {
+    if (gamesData) {
       const sortedGames = gamesData
         .filter((g: Game) => {
           const day = g.start_time.toLowerCase();
@@ -84,13 +86,13 @@ export default function WatchPartyApp() {
         .sort((a: Game, b: Game) => parseKickoffOrder(a.start_time) - parseKickoffOrder(b.start_time));
 
       setGames(sortedGames);
-    };
     }
+
     if (subsData) setSubmissions(subsData);
     setLoading(false);
   };
 
- useEffect(() => {
+  useEffect(() => {
     fetchData();
 
     // 2. Real-time updates subscription across all devices
@@ -116,7 +118,6 @@ export default function WatchPartyApp() {
     const interval = setInterval(async () => {
       try {
         await fetch("/api/sync-scores");
-        // Supabase Realtime will automatically trigger fetchData() across all connected devices
       } catch (err) {
         console.error("Auto-sync error:", err);
       }
@@ -177,6 +178,21 @@ export default function WatchPartyApp() {
     await supabase.from("games").update({ winner, status: "final" }).eq("id", gameId);
   };
 
+  const handleSyncScores = async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/sync-scores");
+      const data = await res.json();
+      if (data.success) {
+        alert("Scores and touchdowns synced!");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   // Calculate live leaderboards
   const scoredGuests = submissions.map((sub) => {
     let wins = 0;
@@ -186,7 +202,7 @@ export default function WatchPartyApp() {
     let tdHits = 0;
 
     games.forEach((game) => {
-      const pick = sub.picks[game.id];
+      const pick = sub.picks?.[game.id];
       if (!pick) return;
 
       // 1. Straight-up W-L-T calculation (live projected + final)
@@ -224,19 +240,25 @@ export default function WatchPartyApp() {
     (a, b) => b.parlayMultiplier - a.parlayMultiplier
   );
 
-  const handleSyncScores = async () => {
-    setSyncing(true);
-    try {
-      const res = await fetch("/api/sync-scores");
-      const data = await res.json();
-      if (data.success) {
-        alert("Scores and touchdowns synced!");
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setSyncing(false);
+  // Color helpers for expandable pick clusters
+  const getWinnerBadgeStyle = (game: Game, selectedWinner: string) => {
+    if (game.status === "scheduled" || !game.winner) {
+      return "bg-amber-950/50 border-amber-500/40 text-amber-300"; // Yellow: scheduled or tied
     }
+    if (selectedWinner === game.winner) {
+      return "bg-emerald-950/60 border-emerald-500/50 text-emerald-300"; // Green: leading or won
+    }
+    return "bg-rose-950/60 border-rose-500/50 text-rose-300"; // Red: trailing or lost
+  };
+
+  const getTdBadgeStyle = (game: Game, playerName: string) => {
+    if (game.td_scorers?.includes(playerName)) {
+      return "bg-emerald-950/60 border-emerald-500/50 text-emerald-300"; // Green: scored TD
+    }
+    if (game.status === "final") {
+      return "bg-rose-950/60 border-rose-500/50 text-rose-300"; // Red: final without TD
+    }
+    return "bg-amber-950/50 border-amber-500/40 text-amber-300"; // Yellow: scheduled or in progress
   };
 
   if (loading) {
@@ -249,23 +271,30 @@ export default function WatchPartyApp() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-4 md:p-8">
-      <div className="max-w-6xl mx-auto space-y-8">
-        <header className="flex justify-between items-center border-b border-slate-800 pb-5">
+      <div className="max-w-7xl mx-auto space-y-8">
+        {/* TOP HEADER */}
+        <header className="flex flex-wrap justify-between items-center gap-4 border-b border-slate-800 pb-5">
           <div>
             <h1 className="text-3xl md:text-4xl font-black text-amber-400 tracking-tight">
               🏈 Watch Party Pool & Parlay
             </h1>
             <p className="text-slate-400 mt-1 text-sm">
-              Live odds & real-time leaderboard across all devices.
+              Click any player on the leaderboards to inspect their picks.
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={handleSyncScores}
               disabled={syncing}
               className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-lg transition cursor-pointer"
             >
               {syncing ? "Syncing..." : "🔄 Refresh Scores"}
+            </button>
+            <button
+              onClick={() => setShowPickForm(!showPickForm)}
+              className="text-xs bg-sky-900/70 hover:bg-sky-800 text-sky-200 font-semibold px-3 py-1.5 rounded-lg border border-sky-700/60 cursor-pointer"
+            >
+              {showPickForm ? "Hide Pick Sheet" : "Show Pick Sheet"}
             </button>
             <button
               onClick={() => setShowAdmin(!showAdmin)}
@@ -280,18 +309,24 @@ export default function WatchPartyApp() {
         {showAdmin && (
           <div className="bg-amber-950/40 border border-amber-600/40 rounded-xl p-5 space-y-4">
             <h2 className="text-lg font-bold text-amber-300">Host Controls (Toggle Live Hits & Winners)</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {games.map((g) => (
                 <div key={g.id} className="bg-slate-900 p-4 rounded-lg border border-slate-800 space-y-3">
-                  <div className="text-sm font-bold text-amber-400">{g.away_team} @ {g.home_team}</div>
-                  
+                  <div className="text-sm font-bold text-amber-400">
+                    {g.away_team} @ {g.home_team}
+                  </div>
+
                   <div>
-                    <span className="text-[11px] text-slate-400 uppercase font-bold block mb-1">Set Final Winner:</span>
+                    <span className="text-[11px] text-slate-400 uppercase font-bold block mb-1">
+                      Set Final Winner:
+                    </span>
                     <div className="flex gap-2">
                       <button
                         onClick={() => setGameWinner(g.id, g.away_team)}
                         className={`text-xs px-2.5 py-1 rounded border transition ${
-                          g.winner === g.away_team ? 'bg-amber-500 text-black font-bold border-amber-400' : 'bg-slate-800 text-white border-slate-700'
+                          g.winner === g.away_team
+                            ? "bg-amber-500 text-black font-bold border-amber-400"
+                            : "bg-slate-800 text-white border-slate-700"
                         }`}
                       >
                         {g.away_team} Won
@@ -299,7 +334,9 @@ export default function WatchPartyApp() {
                       <button
                         onClick={() => setGameWinner(g.id, g.home_team)}
                         className={`text-xs px-2.5 py-1 rounded border transition ${
-                          g.winner === g.home_team ? 'bg-amber-500 text-black font-bold border-amber-400' : 'bg-slate-800 text-white border-slate-700'
+                          g.winner === g.home_team
+                            ? "bg-amber-500 text-black font-bold border-amber-400"
+                            : "bg-slate-800 text-white border-slate-700"
                         }`}
                       >
                         {g.home_team} Won
@@ -308,7 +345,9 @@ export default function WatchPartyApp() {
                   </div>
 
                   <div>
-                    <span className="text-[11px] text-slate-400 uppercase font-bold block mb-1">Tap Player When TD Scores:</span>
+                    <span className="text-[11px] text-slate-400 uppercase font-bold block mb-1">
+                      Tap Player When TD Scores:
+                    </span>
                     <div className="flex flex-wrap gap-1.5">
                       {g.top_scorers?.map((p) => {
                         const hasScored = g.td_scorers?.includes(p.name);
@@ -317,12 +356,12 @@ export default function WatchPartyApp() {
                             key={p.name}
                             onClick={() => toggleTdScorer(g, p.name)}
                             className={`text-xs px-2.5 py-1 rounded border transition ${
-                              hasScored 
-                                ? 'bg-emerald-500 text-black font-bold border-emerald-400 shadow' 
-                                : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                              hasScored
+                                ? "bg-emerald-500 text-black font-bold border-emerald-400 shadow"
+                                : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700"
                             }`}
                           >
-                            {p.name} {hasScored ? '✓' : ''}
+                            {p.name} {hasScored ? "✓" : ""}
                           </button>
                         );
                       })}
@@ -334,162 +373,276 @@ export default function WatchPartyApp() {
           </div>
         )}
 
-        {/* Dual Leaderboards */}
-        <div className="grid md:grid-cols-2 gap-6">
-          {/* Straight Up Records */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-bold text-sky-400">🏆 Straight Up Records</h2>
-              <span className="text-xs bg-sky-950 text-sky-300 px-2.5 py-1 rounded border border-sky-800">
-                W-L-T
-              </span>
-            </div>
-            {recordLeaderboard.length === 0 ? (
-              <p className="text-slate-500 text-sm">No submissions yet.</p>
-            ) : (
-              <div className="space-y-2.5">
-                {recordLeaderboard.map((guest, idx) => (
-                  <div
-                    key={guest.id}
-                    className="flex justify-between items-center bg-slate-950 px-3.5 py-2.5 rounded-lg border border-slate-800/80"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-slate-500 font-mono text-sm">#{idx + 1}</span>
-                      <span className="font-semibold text-slate-100">{guest.guest_name}</span>
-                    </div>
-                    {/* 👇 STRAIGHT-UP BADGE */}
-                    <span className="font-mono font-bold text-sky-400 bg-sky-950/60 px-3 py-1 rounded border border-sky-800/50">
-                      {guest.wins}-{guest.losses}-{guest.ties}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Combined TD Parlay Odds */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-bold text-emerald-400">🔥 Combined TD Parlay Odds</h2>
-              <span className="text-xs bg-emerald-950 text-emerald-300 px-2.5 py-1 rounded border border-emerald-800">
-                Hit Multipliers
-              </span>
-            </div>
-            {parlayLeaderboard.length === 0 ? (
-              <p className="text-slate-500 text-sm">No submissions yet.</p>
-            ) : (
-              <div className="space-y-2.5">
-                {parlayLeaderboard.map((guest, idx) => (
-                  <div
-                    key={guest.id}
-                    className="flex justify-between items-center bg-slate-950 px-3.5 py-2.5 rounded-lg border border-slate-800/80"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-slate-500 font-mono text-sm">#{idx + 1}</span>
-                      <div>
-                        <span className="font-semibold text-slate-100 block">{guest.guest_name}</span>
-                        <span className="text-xs text-slate-400">{guest.tdHits} TD Hits</span>
-                      </div>
-                    </div>
-                    {/* 👇 PARLAY BADGE */}
-                    <span className="font-mono font-bold text-emerald-400 bg-emerald-950/60 px-3 py-1 rounded border border-emerald-800/50">
-                      {guest.parlayMultiplier.toFixed(2)}x
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* PICKS FORM */}
-        <form onSubmit={handleSubmit} className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl space-y-6">
-          <div className="border-b border-slate-800 pb-4">
-            <h2 className="text-2xl font-bold text-white">Enter Your Picks</h2>
-            <p className="text-xs text-slate-400 mt-1">Pick straight-up winner & 1 TD scorer for every matchup.</p>
-            <div className="mt-4 max-w-xs">
-              <label className="block text-xs uppercase font-bold text-slate-400 mb-1">Your Name</label>
-              <input
-                type="text"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                placeholder="e.g. The Rat"
-                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            {games.map((game) => (
-              <div key={game.id} className="bg-slate-950 border border-slate-800/80 rounded-xl p-5 space-y-4">
-                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
-                  <span className="text-xs font-mono uppercase text-amber-400">{game.start_time}</span>
-                  <span className={`text-xs uppercase font-bold px-2 py-0.5 rounded ${
-                    game.status === 'final' ? 'bg-slate-800 text-slate-300' : 'bg-emerald-900/50 text-emerald-300 animate-pulse'
-                  }`}>
-                    {game.status.replace('_', ' ')}
+        {/* MAIN LAYOUT: CENTRAL LEADERBOARDS + OPTIONAL SIDEBAR PICK FORM */}
+        <div className={`grid grid-cols-1 ${showPickForm ? "xl:grid-cols-12" : ""} gap-8 items-start`}>
+          {/* CENTRAL LEADERBOARDS */}
+          <div className={`${showPickForm ? "xl:col-span-8" : "max-w-5xl mx-auto w-full"} space-y-6`}>
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Straight Up Records */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-bold text-sky-400">🏆 Straight Up Records</h2>
+                  <span className="text-xs bg-sky-950 text-sky-300 px-2.5 py-1 rounded border border-sky-800">
+                    W-L-T
                   </span>
                 </div>
 
-                <div>
-                  <label className="block text-xs uppercase font-bold text-slate-400 mb-2">1. Pick Winner</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {[game.away_team, game.home_team].map((team) => {
-                      const isSelected = picks[game.id]?.selectedWinner === team;
+                {recordLeaderboard.length === 0 ? (
+                  <p className="text-slate-500 text-sm">No submissions yet.</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {recordLeaderboard.map((guest, idx) => {
+                      const isExpanded = expandedRecordId === guest.id;
                       return (
-                        <button
-                          key={team}
-                          type="button"
-                          onClick={() => handleWinnerSelect(game.id, team)}
-                          className={`py-3 px-4 rounded-lg font-bold border text-sm transition ${
-                            isSelected
-                              ? 'bg-amber-500 border-amber-400 text-slate-950 shadow-md'
-                              : 'bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800'
-                          }`}
+                        <div
+                          key={guest.id}
+                          className="bg-slate-950 rounded-lg border border-slate-800/80 overflow-hidden"
                         >
-                          {team}
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedRecordId(isExpanded ? null : guest.id)}
+                            className="w-full flex justify-between items-center px-3.5 py-2.5 hover:bg-slate-900/80 transition text-left cursor-pointer"
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="text-slate-500 font-mono text-sm">#{idx + 1}</span>
+                              <span className="font-semibold text-slate-100">{guest.user_name}</span>
+                              <span className="text-[10px] text-slate-500">
+                                {isExpanded ? "▲" : "▼"}
+                              </span>
+                            </div>
+                            <span className="font-mono font-bold text-sky-400 bg-sky-950/60 px-3 py-1 rounded border border-sky-800/50">
+                              {guest.wins}-{guest.losses}-{guest.ties}
+                            </span>
+                          </button>
+
+                          {/* EXPANDABLE PICK CLUSTER: STRAIGHT-UP PICKS */}
+                          {isExpanded && (
+                            <div className="px-3.5 pb-3 pt-2 border-t border-slate-800/80 bg-slate-950/60">
+                              <div className="flex flex-wrap gap-1.5">
+                                {games.map((game) => {
+                                  const pick = guest.picks?.[game.id];
+                                  if (!pick) return null;
+                                  const mascot = pick.selectedWinner.split(" ").pop();
+                                  return (
+                                    <span
+                                      key={game.id}
+                                      title={`${game.away_team} @ ${game.home_team}`}
+                                      className={`text-[11px] font-semibold px-2 py-1 rounded border ${getWinnerBadgeStyle(
+                                        game,
+                                        pick.selectedWinner
+                                      )}`}
+                                    >
+                                      {mascot}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
+                )}
+              </div>
+
+              {/* Combined TD Parlay Odds */}
+              <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-bold text-emerald-400">🔥 Combined TD Parlay Odds</h2>
+                  <span className="text-xs bg-emerald-950 text-emerald-300 px-2.5 py-1 rounded border border-emerald-800">
+                    Hit Multipliers
+                  </span>
                 </div>
 
-                <div>
-                  <label className="block text-xs uppercase font-bold text-slate-400 mb-2">2. Pick Anytime TD Scorer</label>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-                    {game.top_scorers?.map((player) => {
-                      const isSelected = picks[game.id]?.selectedPlayer?.name === player.name;
+                {parlayLeaderboard.length === 0 ? (
+                  <p className="text-slate-500 text-sm">No submissions yet.</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {parlayLeaderboard.map((guest, idx) => {
+                      const isExpanded = expandedParlayId === guest.id;
                       return (
-                        <button
-                          key={player.name}
-                          type="button"
-                          onClick={() => handlePlayerSelect(game.id, player)}
-                          className={`p-2.5 rounded-lg border text-left flex flex-col justify-between transition ${
-                            isSelected
-                              ? 'bg-emerald-600 border-emerald-400 text-white shadow-md'
-                              : 'bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800'
-                          }`}
+                        <div
+                          key={guest.id}
+                          className="bg-slate-950 rounded-lg border border-slate-800/80 overflow-hidden"
                         >
-                          <span className="text-xs font-semibold leading-tight line-clamp-1">{player.name}</span>
-                          <span className={`text-xs font-mono font-bold mt-1 ${isSelected ? 'text-emerald-100' : 'text-emerald-400'}`}>
-                            {player.americanOdds > 0 ? `+${player.americanOdds}` : player.americanOdds}
-                          </span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedParlayId(isExpanded ? null : guest.id)}
+                            className="w-full flex justify-between items-center px-3.5 py-2.5 hover:bg-slate-900/80 transition text-left cursor-pointer"
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="text-slate-500 font-mono text-sm">#{idx + 1}</span>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold text-slate-100">{guest.user_name}</span>
+                                  <span className="text-[10px] text-slate-500">
+                                    {isExpanded ? "▲" : "▼"}
+                                  </span>
+                                </div>
+                                <span className="text-xs text-slate-400">{guest.tdHits} TD Hits</span>
+                              </div>
+                            </div>
+                            <span className="font-mono font-bold text-emerald-400 bg-emerald-950/60 px-3 py-1 rounded border border-emerald-800/50">
+                              {guest.parlayMultiplier.toFixed(2)}x
+                            </span>
+                          </button>
+
+                          {/* EXPANDABLE PICK CLUSTER: TD SCORERS */}
+                          {isExpanded && (
+                            <div className="px-3.5 pb-3 pt-2 border-t border-slate-800/80 bg-slate-950/60">
+                              <div className="flex flex-wrap gap-1.5">
+                                {games.map((game) => {
+                                  const pick = guest.picks?.[game.id];
+                                  if (!pick) return null;
+                                  const oddsLabel =
+                                    pick.selectedPlayer.americanOdds > 0
+                                      ? `+${pick.selectedPlayer.americanOdds}`
+                                      : pick.selectedPlayer.americanOdds;
+                                  return (
+                                    <span
+                                      key={game.id}
+                                      title={`${game.away_team} @ ${game.home_team}`}
+                                      className={`text-[11px] font-semibold px-2 py-1 rounded border ${getTdBadgeStyle(
+                                        game,
+                                        pick.selectedPlayer.name
+                                      )}`}
+                                    >
+                                      {pick.selectedPlayer.name} ({oddsLabel})
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
-                </div>
+                )}
               </div>
-            ))}
+            </div>
           </div>
 
-          <button
-            type="submit"
-            className="w-full bg-amber-400 hover:bg-amber-300 text-slate-950 font-black py-4 rounded-xl text-lg uppercase tracking-wide transition shadow-lg cursor-pointer"
-          >
-            Lock In Picks
-          </button>
-        </form>
+          {/* SIDEBAR / SECONDARY PICKS FORM */}
+          {showPickForm && (
+            <form
+              onSubmit={handleSubmit}
+              className="xl:col-span-4 bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl space-y-5"
+            >
+              <div className="border-b border-slate-800 pb-4">
+                <h2 className="text-xl font-bold text-white">Enter Your Picks</h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  Pick straight-up winner & 1 TD scorer per game.
+                </p>
+                <div className="mt-3">
+                  <label className="block text-xs uppercase font-bold text-slate-400 mb-1">
+                    Your Name
+                  </label>
+                  <input
+                    type="text"
+                    value={userName}
+                    onChange={(e) => setUserName(e.target.value)}
+                    placeholder="e.g. The Rat"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
+                {games.map((game) => (
+                  <div
+                    key={game.id}
+                    className="bg-slate-950 border border-slate-800/80 rounded-xl p-4 space-y-3"
+                  >
+                    <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                      <span className="text-[11px] font-mono uppercase text-amber-400">
+                        {game.start_time}
+                      </span>
+                      <span
+                        className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
+                          game.status === "final"
+                            ? "bg-slate-800 text-slate-300"
+                            : "bg-emerald-900/50 text-emerald-300"
+                        }`}
+                      >
+                        {game.status.replace("_", " ")}
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] uppercase font-bold text-slate-400 mb-1.5">
+                        1. Pick Winner
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[game.away_team, game.home_team].map((team) => {
+                          const isSelected = picks[game.id]?.selectedWinner === team;
+                          return (
+                            <button
+                              key={team}
+                              type="button"
+                              onClick={() => handleWinnerSelect(game.id, team)}
+                              className={`py-2 px-2.5 rounded-lg font-bold border text-xs transition ${
+                                isSelected
+                                  ? "bg-amber-500 border-amber-400 text-slate-950 shadow-md"
+                                  : "bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800"
+                              }`}
+                            >
+                              {team.split(" ").pop()}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] uppercase font-bold text-slate-400 mb-1.5">
+                        2. Pick Anytime TD Scorer
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {game.top_scorers?.map((player) => {
+                          const isSelected = picks[game.id]?.selectedPlayer?.name === player.name;
+                          return (
+                            <button
+                              key={player.name}
+                              type="button"
+                              onClick={() => handlePlayerSelect(game.id, player)}
+                              className={`p-2 rounded-lg border text-left flex justify-between items-center transition ${
+                                isSelected
+                                  ? "bg-emerald-600 border-emerald-400 text-white shadow-md"
+                                  : "bg-slate-900 border-slate-800 text-slate-300 hover:bg-slate-800"
+                              }`}
+                            >
+                              <span className="text-[11px] font-semibold leading-tight truncate pr-1">
+                                {player.name}
+                              </span>
+                              <span
+                                className={`text-[11px] font-mono font-bold shrink-0 ${
+                                  isSelected ? "text-emerald-100" : "text-emerald-400"
+                                }`}
+                              >
+                                {player.americanOdds > 0
+                                  ? `+${player.americanOdds}`
+                                  : player.americanOdds}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-amber-400 hover:bg-amber-300 text-slate-950 font-black py-3 rounded-xl text-sm uppercase tracking-wide transition shadow-lg cursor-pointer"
+              >
+                Lock In Picks
+              </button>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );
