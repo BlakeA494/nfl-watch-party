@@ -242,8 +242,11 @@ export default function WatchPartyApp() {
 
   // Color helpers for expandable pick clusters
   const getWinnerBadgeStyle = (game: Game, selectedWinner: string) => {
-    if (game.status === "scheduled" || !game.winner) {
-      return "bg-amber-950/50 border-amber-500/40 text-amber-300"; // Yellow: scheduled or tied
+    if (game.status === "scheduled") {
+      return "bg-slate-900 border-slate-800 text-slate-400"; // Neutral: not started yet
+    }
+    if (!game.winner) {
+      return "bg-amber-950/50 border-amber-500/40 text-amber-300"; // Yellow: live or final tie
     }
     if (selectedWinner === game.winner) {
       return "bg-emerald-950/60 border-emerald-500/50 text-emerald-300"; // Green: leading or won
@@ -252,13 +255,16 @@ export default function WatchPartyApp() {
   };
 
   const getTdBadgeStyle = (game: Game, playerName: string) => {
+    if (game.status === "scheduled") {
+      return "bg-slate-900 border-slate-800 text-slate-400"; // Neutral: not started yet
+    }
     if (game.td_scorers?.includes(playerName)) {
       return "bg-emerald-950/60 border-emerald-500/50 text-emerald-300"; // Green: scored TD
     }
     if (game.status === "final") {
       return "bg-rose-950/60 border-rose-500/50 text-rose-300"; // Red: final without TD
     }
-    return "bg-amber-950/50 border-amber-500/40 text-amber-300"; // Yellow: scheduled or in progress
+    return "bg-amber-950/50 border-amber-500/40 text-amber-300"; // Yellow: in progress without TD yet
   };
 
   if (loading) {
